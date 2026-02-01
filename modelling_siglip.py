@@ -1,7 +1,6 @@
 from typing import Optional,Tuple
 import torch
 import torch.nn as nn
-
 class SigLIPVisionConfig:
     def __init__(
             self,
@@ -66,12 +65,32 @@ class SigLIPVisionEmbedding(nn.Module):
             #[Batch, Num_Patches, Embed_Dim] → [B, 196, 768]
             return embeddings
 
+class SigLIPEncoderLayer(nn.Module):
+      def __init__(self,config:SigLIPVisionConfig):
+            super().__init__()
+            self.embed_dim=config.hidden_size
+            self.self_attn=SigLIPAttention(config)
+            self.layer_norm1=nn.LayerNorm(self.embed_dim,eps=config.layer_norm_eps)
+            self.mlp=SigLIPMLP(config)
+            self.layer_norm2=nn.LayerNorm(self.embed_dim,eps=config.layer_norm_eps)
+      def forward(
+                  self,
+                  hidden_states:torch.Tensor
+      )
+
+
+
+            
+
+
 class SigLIPVisionTransformer(nn.Module):
       def __init__(self,config:SigLIPVisionConfig):
             super().__init__()
             self.config=config
             embed_dim=config.hidden_size
+#! takes the patch of the image using conv then convert it into the embedding which will be added to another vector called positonal encoding
             self.embeddings=SigLIPVisionEmbedding(config)
+#!We will feed the embedding to the encoder
             self.encoder=SigLIPEncoder(config)
             self.post_layernorm=nn.LayerNorm(embed_dim,eps=config.layer_norm_eps)
             #pixel values  is the images which is the batch of images 
