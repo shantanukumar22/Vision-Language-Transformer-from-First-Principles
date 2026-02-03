@@ -73,16 +73,26 @@ class SigLIPEncoderLayer(nn.Module):
             self.layer_norm1=nn.LayerNorm(self.embed_dim,eps=config.layer_norm_eps)
             self.mlp=SigLIPMLP(config)
             self.layer_norm2=nn.LayerNorm(self.embed_dim,eps=config.layer_norm_eps)
-      def forward(
-                  self,
-                  hidden_states:torch.Tensor
-      )
+      def forward(self,hidden_states:torch.Tensor)->torch.Tensor:
+            #residual -> (Batch_size,Num_patches,Embed_dimension)
+            residual = hidden_states
+            hidden_states=self.layer_norm1(hidden_states) #does not change shape of input
+            hidden_states,_=self.self_attn(hidden_states=hidden_states) #does not change the shape of input but it takes an embedding and return a contextualized embedding
+            # (Batch_size,Num_patches,Embed_dimension)
+            hidden_states=hidden_states+residual
+            residual=hidden_states
+            hidden_states=self.layer_norm2(hidden_states)
+            #while in self attention there is mixing of tokens and patches for contextualizing but in the 
+            #MLP each of them in transform independetly it increases parameters so the model have more DOF to learn
+            #second would be it allows the sequence of patches for the next layer
+            #also introduces non-linearity which let model learns on complex transformations
+            hidden_states =  self.mlp(hidden_states)
+            # (Batch_size,Num_patches,Embed_dimension)
+            hidden_states=residual+hidden_states
+            # (Batch_size,Num_patches,Embed_dimension)
 
-
-
-            
-
-
+            return hidden_states
+      
 class SigLIPVisionTransformer(nn.Module):
       def __init__(self,config:SigLIPVisionConfig):
             super().__init__()
