@@ -121,7 +121,23 @@ class SigLIPVisionModel(nn.Module):
             #[Batch_size,Channels,Height,Width] -> [Batch_size,num_Patches,Embed_dim]
             return self.vision_model(pixel_values=pixel_values)
             
+class SigLIPMLP(nn.Module):
+      def __init__(self,config:SigLIPVisionConfig):
+            super().__init__()
+            self.config=config
+            #patches are expanded into intermediate_size from hidden_size adds non-linearity then again compressed back to  the hidden_size size
+            self.fc1=nn.Linear(config.hidden_size,config.intermediate_size)
+            self.fc2=nn.Linear(config.intermediate_size,config.hidden_size)
+      def forward(self):
+            #[Batch_size,Num_Patches,Embed_dim]->[Batch_size,Num_patches,intermediate_size]
+            hidden_states=self.fc1(hidden_states)
+            hidden_states=nn.functional.gelu(hidden_states,approximate='tanh')
+            
 
 
 
             
+
+
+
+
