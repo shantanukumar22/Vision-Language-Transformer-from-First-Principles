@@ -112,14 +112,6 @@ class SigLIPVisionTransformer(nn.Module):
             last_hidden_state=self.post_layernorm(last_hidden_state)
 
             return last_hidden_state
-class SigLIPVisionModel(nn.Module):
-      def  __init__(self,config:SigLIPVisionConfig):
-            super().__init__()
-            self.config= config
-            self.vision_model=SigLIPVisionTransformer(config)
-      def forward(self,pixel_values)->Tuple:
-            #[Batch_size,Channels,Height,Width] -> [Batch_size,num_Patches,Embed_dim]
-            return self.vision_model(pixel_values=pixel_values)
             
 class SigLIPMLP(nn.Module):
       def __init__(self,config:SigLIPVisionConfig):
@@ -132,7 +124,57 @@ class SigLIPMLP(nn.Module):
             #[Batch_size,Num_Patches,Embed_dim]->[Batch_size,Num_patches,intermediate_size]
             hidden_states=self.fc1(hidden_states)
             hidden_states=nn.functional.gelu(hidden_states,approximate='tanh')
+            #[Batch_size,Num_patches,intermediate_state]->[Batch_size,Num_patches,embed_dim]
+            hidden_states=self.fc2(hidden_states)
+            return hidden_states
+##!Attention mechanism for Vision Transformer
+# we don't have any causal mask here
+
+class SigLIPVisionModel(nn.Module):
+      def  __init__(self,config:SigLIPVisionConfig):
+            super().__init__()
+            self.config= config
+            self.vision_model=SigLIPVisionTransformer(config)
+      def forward(self,pixel_values)->Tuple:
+            #[Batch_size,Channels,Height,Width] -> [Batch_size,num_Patches,Embed_dim]
+            return self.vision_model(pixel_values=pixel_values)
+
+
+class SigLIPAttention(nn.Module):
+      """Multi-head attention from paper"""
+      def __init__(self,config):
+            super().__init__()
+            self.config=config
+            self.embed_dim=config.hidden_size
+            self.num_head=config.num_attention_heads 
+            self.head_dim=self.embed_dim // self.num_head
+            self.scale=self.head_dim() ** -0.5 #equivalent to 1/sqrt(self.head_dim)
+            self.dropout=config.attention_dropout
+            self.k_layer=nn.Linear(self.embed_dim)
+            self.v_layer=nn.Linear(self.embed_dim)
+            self.q_layer=nn.Linear(self.embed_dim)
+            self.out_proj=nn.Linear(self.embed_dim,self.embed_dim)
+      def forward(self,
+                  hidden_states:torch.Tensor,
+                  )->Tuple[torch.Tensor,Optional[torch.Tensor]]:
+            #the output of the layer norm will work as the input for the Attention
+            #hidden statses:=[Batch_size,num_patches,embed_dim]
+            batch_size,seq_len,_=hidden_states.size() 
+            query_value=self.q_layer(hidden_states)
+            key_value=self.k_layer(hidden_states)
+            value_value=self.v_layer(hidden_states)
+            query_value=query_value.view(batch_size,seq_len,self.num_head,self.head_dim).transpose(1,2)
+            key_value=key_value.view(batch_size,seq_len,self.num_head,self.head_dim).transpose(1,2)
+            value_value=value_value.view(batch_size,seq_len,self.num_head,self.head_dim).transpose(1,2)
             
+             
+
+
+
+
+       
+
+
 
 
 
