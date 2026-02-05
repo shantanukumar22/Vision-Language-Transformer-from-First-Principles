@@ -65,6 +65,18 @@ class SigLIPVisionEmbedding(nn.Module):
             #[Batch, Num_Patches, Embed_Dim] → [B, 196, 768]
             return embeddings
 
+class SigLIPEncoder(nn.Module):
+      def __init__(self,config:SigLIPVisionConfig):
+            super().__init__()
+            self.config=config
+            self.layers=nn.ModuleList([SigLIPEncoderLayer(config) for _ in range(config.num_hidden_layers)])
+      def forward(self,input_embeds:torch.Tensor)-> torch.Tensor:
+            #input_embeds :[Batch_size,Num_patches,Embed_dim]
+            hidden_states=input_embeds
+            for encoder_later in self.layers:
+                  #[Batch_size,Num_patches,Embed_dim]
+                  hidden_states=encoder_later(hidden_states)
+            return hidden_states
 class SigLIPEncoderLayer(nn.Module):
       def __init__(self,config:SigLIPVisionConfig):
             super().__init__()
@@ -163,9 +175,41 @@ class SigLIPAttention(nn.Module):
             query_value=self.q_layer(hidden_states)
             key_value=self.k_layer(hidden_states)
             value_value=self.v_layer(hidden_states)
+            #.view splits the last dimension into the smaller part embed dim into numhead and headdim
+            #query_value:[Batch_size,num_patches,num_head,head_dim].transpose(1,2)->[Batch_size,num_head,num_patches,head_dim]
             query_value=query_value.view(batch_size,seq_len,self.num_head,self.head_dim).transpose(1,2)
             key_value=key_value.view(batch_size,seq_len,self.num_head,self.head_dim).transpose(1,2)
             value_value=value_value.view(batch_size,seq_len,self.num_head,self.head_dim).transpose(1,2)
+            #calculate attention
+            #atn weights: [Batch_size,Num_heads,Num_patches,Num_patches]
+            attn_weights=(torch.matmul(query_value,key_value.transpose(2,3))* self.scale)
+            #verify the dimension of the matrix
+            if attn_weights.size() != (batch_size,self.num_head,seq_len,seq_len):
+                  raise ValueError(
+                        f"attention weight should be of size {(batch_size,self.num_head,seq_len,seq_len)}, but is {attn_weights.size()}"
+                  )
+            #then we apply the softmax to convert the attn_score into the number between zero and one such that they sum upto 1
+            attn_weights=nn.functional.softmax(attn_weights,dim=-1,dtype=torch.float32).to(query_value.dtype)
+            #multiply the attention with the value sequence
+            weighted_attn=torch.matmul(attn_weights,value_value)
+            #checking for the size
+            if weighted_attn.size() !=(batch_size,self.num_head,seq_len,self.head_dim):
+                  raise ValueError(
+                        f"attn_output  should be of size {(batch_size,self.num_head,seq_len,self.head_dim)} but it is {weighted_attn.size()}"
+   
+                  )
+            #[batch_size,Num_heads,Num_patches,Head_dim]->["Batch_size","num_patches","Num_heads",Head_dim]
+
+            weighted_attn=weighted_attn.transpose(1,2).contiguous()
+            weighted_attn=weighted_attn.reshape(batch_size,seq_len,self.embed_dim)
+            #[Batch_size,num_patches,embed_dim]
+            weighted_attn=self.out_proj(weighted_attn)
+            return attn_weights,weighted_attn
+
+
+
+ 
+
             
              
 
