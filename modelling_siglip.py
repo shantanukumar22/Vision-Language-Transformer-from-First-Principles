@@ -206,12 +206,8 @@ class SigLIPAttention(nn.Module):
             weighted_attn=self.out_proj(weighted_attn)
             return attn_weights,weighted_attn
 
-
-
- 
-
             
-             
+              
 
 
 
