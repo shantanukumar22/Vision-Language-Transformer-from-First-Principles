@@ -127,7 +127,7 @@ class PaligemmaProcessor:
                 ]
 
                 #Returns the input ids and attention mask as pytorch tensor
-                # words->input Id's -> vector embedding.
+                # words->input Id's -> v
                 # hey there -> [1, 4 5](input ids)->[...,...,... 1024],[....,...,.,, 1024],[...,...,...,1024]
                 inputs = self.tokenizer(
                        input_strings,
@@ -138,4 +138,3 @@ class PaligemmaProcessor:
                 return_data = {"pixel_values":pixel_values, **inputs}
 
                 return return_data
-
