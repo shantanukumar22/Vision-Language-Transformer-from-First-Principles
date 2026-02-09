@@ -1,3 +1,8 @@
+# ! this file is the fusion logic between vision and language
+
+#Image-> SigLIP Vision Encoder ->Image Patch Embeddings -> projection Layers ( resize to LM dimension )
+# -> Merge with text embeddings  -> Gemma Language model -> generated text
+
 import torch
 from torch import nn
 from typing import Tuple,Optional,List
@@ -9,16 +14,16 @@ class GemmaConfig():
 
     def __init__(
         self,
-        vocab_size,
-        hidden_size,
+        vocab_size, # number of token language model understand vocab_size defines how many different symbols the model can embed and predict. example 32000 words/tokens in vocabulary
+        hidden_size,# embedding dimension of each token (cat -> vector size of 2048)
         intermediate_size,#intermediate size of the FeedForward layer
         num_hidden_layers, #how many layers our transformer have in our Gemma model
-        num_attention_heads, #number of heads for the query
-        num_key_value_heads, #number of heads for the key and value 
-        head_dim=256, #how many dimension each head will work with
-        max_position_embeddings=8192, #maximum number of position our model has been trained upon necessary for Rotary Positional Encoding
+        num_attention_heads, #how many heads in the self-attention
+        num_key_value_heads, #Used for group Query Attention(GQA) -- important Gemma optimization (many query heads/ fewwer key/value heads reduces memory cost)
+        head_dim=256, #how many dimension each head will work with. dimension per head
+        max_position_embeddings=8192,  #Maximum Sequence length our model supports  .maximum number of position our model has been trained upon necessary for Rotary Positional Encoding
         rms_norm_eps=1e-6, 
-        rope_theta=10000.0,
+        rope_theta=10000.0, # scaling constant used in RoPE frequency computation
         attention_bias=False,
         attention_dropout=0.0,
         pad_token_id=None,
@@ -40,13 +45,14 @@ class GemmaConfig():
         self.pad_token_id = pad_token_id
 
 class PaliGemmaConfig():
-
+#this config merges vision encoder config, text model config and multimodal projector config
+#global configuration for the entier multimodal  projector configuration
     def __init__(
         self,
         vision_config=None, #configuration of vision encoder
         text_config=None, #configuration text decoder
         ignore_index=-100, # is it used in training but we are only doing inference
-        image_token_index=256000, #token corresponding to placeholder <image>
+        image_token_index=256000, #token corresponding to placeholder <image>. special token representing <image> placeholder  inside text prompt. this model replaces <image> token with actual  image embeddings
         vocab_size=257152,
         projection_dim=2048,#final dimension image feature should be resized to before feeding to the language model
         hidden_size=2048, #embedding size of the language model
@@ -75,30 +81,62 @@ class PaliGemmaConfig():
 
 
 class PaliGemmaForConditionalGeneration(nn.Module):
-    def __init__(self,config:PaliGemmaCofig):
+    #actual multimodal model.
+    def __init__(self,config:PaliGemmaConfig):
         super().__init__()
         self.config=config
         #instance of the vision model(encoder of the image)
-        self.vision_tower=SigLIPVisionModel(config.vision_config)
+        self.vision_tower=SigLIPVisionModel(config.vision_config) # image encoder input [batch,3,224,224] -> [batch,196,embed_dim]
         #linear layer or linear projection as  mentioned in the paper
-        self.multi_modal_projector=PaliGemmaMultiModalProjector(config)
+        self.multi_modal_projector=PaliGemmaMultiModalProjector(config) #project vision embeddings to the language model dimension ([batch,196,768] → [batch,196,2048])
         self.vocab_size=config.vocab_size
-        language_model=GemmaForCausalLM(config.text_config)
+        language_model=GemmaForCausalLM(config.text_config) # text decoder, for the generation of the token autoregressively 
         self.language_model=language_model
-        self.pad_token_id=self.config.pad_token_id if self.config.pad_token_id is not None else -1
+        self.pad_token_id=self.config.pad_token_id if self.config.pad_token_id is not None else -1 # stores padding token
 
 
 #weight tying is the technique of reusing the parameters of one layer into the other
     def tie_weights(self):
         return self.language_model.tie_weigths()
-    
+    #fusion
+    #image_features -> embeddings from vision encoder,
+    #input_embeds-> embeddings of text tokens 
+    #input_ids-> token ids
+    #attention mask
+    #goal -> Replace <image> token position with actual image embedding
+    #final sequence [image_tokens,text_tokens]
     def merge_input_ids_with_image_features(self,image_features:torch.Tensor,input_embeds:torch.Tensor,input_ids:torch.Tensor,
                                             attention_mask:torch.Tensor,kv_cache:Optional[KVCache]=None):
         _,_, embed_dim=image_features.shape
         batch_size,sequence_length=input_ids.shape
         dtype,device=input_embeds.dtype,input_embeds.device
-        
+        #shape:[Batch_size,Seq_len,Hidden_size]
+        scaled_image_features=image_features/(self.config.hidden_size**0.5)
+        #combine the embeddings of the image tokens, the text tokens and the mask out all the padding tokens
+        final_embedding= torch.zeros(batch_size,sequence_length,embed_dim, dtype=input_embeds.dtype,device=input_embeds)
+        #shape: [Batch_size, sequence_length] True for text tokens
+        text_mask=(input_ids != self.config.image_token_index) & (input_ids !=self.pad_token_id)
+        #shape:[Batch_size,seq len] true for image tokens
+        image_mask= input_ids== self.config.image_token_index
+        # shape: [Batch_size,seq_len]. True for padding tokens
+        pad_mask=input_ids == self.pad_token_id
+        # these mask are useful for identifying where to put the image token padding token or text token
 
+        # we need to expand the masks to the embeddding dimension otherwise we cant use them in torch.where
+        text_mask_expanded=text_mask.unsqueeze(-1).expand(-1,-1, embed_dim) #expands the 0 and 1 to embed_dimension
+        pad_mask_expanded=pad_mask.unsqueeze(-1).expand(-1,-1,embed_dim)
+        image_mask_expanded=image_mask.unsqueeze(-1).expand(-1,-1,embed_dim)
+
+        #add the text embedding
+        #whenever text mask is 1 we copy the embeddding from the input embeds otherwise final_embedding 
+        final_embeddings=torch.where(text_mask_expanded,input_embeds,final_embedding)
+        #insert image embedding, we cant use torch.where because the  sequence length of the scaled_image_feature is not equal  to the sequence length of the final emebeddding 
+        #copy from the scaled image  where image_mask_expanded is true.
+        final_embedding=final_embedding.masked_scatter(image_mask_expanded,scaled_image_features)
+
+        #zero out padding tokens
+        #wherever the pad_mask_expanded is true keep the zeroes in final embedding othwerwise keep the final embedding
+        final_embedding=torch.where(pad_mask_expanded,torch.zeros_like(final_embedding),final_embedding)
 #since the embedding and the linear in the transformer works in opposite of easch other what we do is to convert is use the parameter by using the weight tying same for teh both cases 
 #also a technique to reduce the number of parameters by sharing it
     def forward(
@@ -114,14 +152,19 @@ class PaliGemmaForConditionalGeneration(nn.Module):
         assert torch.all(attention_mask==1),"the input can not be padded"
         #Extract teh input Embeddings
         #shape:(batch_size,Seq_len,Hidden_size)
+        #  convert tokens into vectors
+        #image to patch  embedddings 
         input_embeds=self.language_model.get_input_embeddings()(input_ids)
          #Merge Text and Images:
          #[Batch_size,Channels,Height,Width] -> [Batch_size,num_patches,embed_dim]
         selected_image_feature=self.vision_tower(pixel_values.to(input_embeds.dtype))
         #[Batch_size,num_Patches,Embed_dim]=> [Batch_size,num_patches,hidden_size]
+        #project image to the Lm dimension
         image_features=self.multi_modal_projector(selected_image_feature)
         #merge embeddings of the text token and the image tokens 
+        #creates the multimodal seqeunce
         input_embeds,attention_mask,position_ids=self.merge_input_ids_with_image_features(image_features,input_embeds,input_ids,attention_mask)
+        #pass into language model
         outputs= self.language_model(
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -129,3 +172,5 @@ class PaliGemmaForConditionalGeneration(nn.Module):
             kv_cache=kv_cache,
          )
         return outputs
+    
+

@@ -1,3 +1,8 @@
+#pre explanation
+# this file will explain the vision encoder of the SigLIP
+#image->tokens->transformer->contextual image embedding
+#this file will build a Vision Transformer used in SigLIP
+
 from typing import Optional,Tuple
 import torch
 import torch.nn as nn
@@ -6,11 +11,11 @@ class SigLIPVisionConfig:
             self,
             hidden_size=768, #size of the embedding vector.each image will become 768 dimensional token
             intermediate_size=3072,#size of linear layer used in FFN
-            num_hidden_layers=12,#number of layers in vision transformer
+            num_hidden_layers=12,#number of layers in vision transformer. (no of transformer block)
             num_attention_heads=12,#number of heads in MHA
             num_channels=3,#how many channels each image have (RGB)
             image_size=224, # the provided image will be resized in 224X224
-            patch_size=16, # Imag will be divided into patches and each patch will be 16 by 16
+            patch_size=16, # Imag will be divided into patches and each patch will be 16 by 16. 224/16= 14. 14 X 14 = 196 patches
             layer_norm_eps=1e-6, 
             attention_dropout=0.0,
             num_image_tokens:int=None,
