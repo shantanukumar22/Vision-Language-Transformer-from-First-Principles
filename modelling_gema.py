@@ -2,7 +2,8 @@
 
 #Image-> SigLIP Vision Encoder ->Image Patch Embeddings -> projection Layers ( resize to LM dimension )
 # -> Merge with text embeddings  -> Gemma Language model -> generated text
-
+#!causality is a choice. which is made during the arhcitecture of LLM. authors of paligemma didn't put the
+#causality in the prompt for the image.but it is in the generation. however mostly LLM are build in case with masking the next tokens even the prompts cause it is considered as the generation itself
 import torch
 from torch import nn
 from typing import Tuple,Optional,List
@@ -139,6 +140,47 @@ class PaliGemmaForConditionalGeneration(nn.Module):
         final_embedding=torch.where(pad_mask_expanded,torch.zeros_like(final_embedding),final_embedding)
 #since the embedding and the linear in the transformer works in opposite of easch other what we do is to convert is use the parameter by using the weight tying same for teh both cases 
 #also a technique to reduce the number of parameters by sharing it
+        ##!# create the attention mask 
+        dtype,device=input_embeds.dtype,input_embeds.device
+        min_dtype=torch.finfo(dtype).min
+        q_len=input_embeds.shape[1]
+
+        if kv_cache is None or kv_cache.num_items() == 0:
+            # do not mask cause we are in the prefill phase i.e doing it for the first time 
+            # this only works when we have no padding 
+            
+            causal_mask= torch.full(
+                (batch_size,q_len,q_len), fill_value=0, dtype=dtype,device=device
+            )
+        else:
+            ##since we are generating the token the query must be one single token
+# we are not masking anything bcz we are working with kv_cache and working with kv_cache is generating only the last row which have access to all the previous tokens so we
+# don't need to mask out anything however duiring training when we train a model on sometihng we need to mask out cause model will generate all the contextualized embedding in parallel and we want it to have the access to only the previous tokens 
+#  during inference we don't have  any causal mask but during training we have causal mask for generation   
+# when we are working with the models like llamma we mask out even the pre-filling part but for the paligemma we do not mask out anytthing 
+
+            assert q_len==1
+            kv_len= kv_cache.num_items() + q_len
+            # also in this case we dont need to mask anything since each query should be able to attend all previous tokens
+            # this only works when we have no padding 
+            causal_mask=torch.full((batch_size,q_len,kv_len),fill_value=0,dtype=type,device=device)
+            
+            ## add the head dimension
+            
+        # we have one attention computation for the each head, there will be one attention matrix for each head
+            #[Batch_size,q_len,kv_len] -> [Batch_size,Num_heads_q,Q_len,KV_len]
+        causal_mask=causal_mask.unsqueeze(1)
+        if kv_cache is not None and kv_cache.num_items() >0:
+            #prefill phase where we have image+text tokens and we will generating rope
+            position_ids=attention_mask.cumsum(-1)[:,-1]
+            if position_ids.dim()==1:
+                position_ids=position_ids.unsqueeze(0)
+        else:
+            #this is the generation part so just 1 query where we will be needing the positional query
+            #create the position ids  based on the size of the attention mask 
+            #for masked tokens,use the number 1 as position
+            position_ids= (attention_mask.cumsum(-1).masked_fill_(attention_mask==0),1).to(device)
+        return final_embedding,causal_mask,position_ids
     def forward(
         self,
         input_ids:torch.LongTensor=None, # image_token contains image_seq_len bos_token  prefix_prompt \n 
