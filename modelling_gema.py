@@ -81,6 +81,87 @@ class PaliGemmaConfig():
 
 
 
+class GemmaModel(nn.Module):
+    def __init__(self,config:GemmaConfig):
+        super().__init__()
+        self.config=config
+        self.padding_idx=config.pad_token_id
+        self.vocab_size=config.vocab_size
+        self.embed_tokens=nn.Embedding(config.vocab_size,config.hidden_size,self.padding_idx)
+        self.layers=nn.ModuleList(
+            [GemmaDecoderLayer(config,layer_idx) for layer_idx in range(config.num_hidden_layers)]
+
+        )
+        self.norm=GemmaRMSNorm(config.hidden_size,eps=config.rms_norm_eps)
+    def get_input_embeddintgs(self):
+        return self.embed_tokens
+    
+
+
+
+
+
+
+# in hugging face whenever we see something something for causalLM it's just transformer model+language modelling head
+class GemmaForCausalLM(nn.Module):
+    def __init__(self,config):
+        super().__init__()
+        self.config=config
+        self.model=GemmaModel(config)
+        self.vocab_size=config.vocab_size
+        self.lm_head=nn.Linear(config.hidden_size,config.vocab_size,bias=False)
+    
+    def get_input_embeddings(self):
+        return self.model.embed_tokens
+    def tie_weights(self):
+        self.lm_head.weight(self.model.embed_tokens.weight)
+
+    def forward(
+        self,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        kv_cache: Optional[KVCache] = None,
+    ) -> Tuple:
+
+        # input_embeds: [Batch_Size, Seq_Len, Hidden_Size]
+        # outputs: [Batch_Size, Seq_Len, Hidden_Size]
+        outputs = self.model(
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            inputs_embeds=inputs_embeds,
+            kv_cache=kv_cache,
+        )
+
+        hidden_states = outputs
+        logits = self.lm_head(hidden_states)
+        logits = logits.float()
+
+        return_data = {
+            "logits": logits,
+        }
+
+        if kv_cache is not None:
+            # Return the updated cache
+            return_data["kv_cache"] = kv_cache
+
+        return return_data
+ 
+#linear layer that converts the size of the image feature extracted from the vision encoder in the size of embedding size used by the language model
+#basically resizing so that they can be concatenated with the text embedding 
+class PaliGemmaMultiModalProjector(nn.Module):
+    def __init__(self,config:PaliGemmaConfig):
+        super().__init__()
+        self.linear=nn.linear(config.vision_config.hidden_size,config.vision_config.projection_dim,bias=True)
+        def forward(self,image_features):
+            hidden_states=self.linear(image_features)
+            return hidden_states
+        
+
+            
+
+
+
 class PaliGemmaForConditionalGeneration(nn.Module):
     #actual multimodal model.
     def __init__(self,config:PaliGemmaConfig):
@@ -155,7 +236,8 @@ class PaliGemmaForConditionalGeneration(nn.Module):
         else:
             ##since we are generating the token the query must be one single token
 # we are not masking anything bcz we are working with kv_cache and working with kv_cache is generating only the last row which have access to all the previous tokens so we
-# don't need to mask out anything however duiring training when we train a model on sometihng we need to mask out cause model will generate all the contextualized embedding in parallel and we want it to have the access to only the previous tokens 
+# don't need to mask out anything however duiring training when we train a model on sometihng we need to mask out cause model will generate all the contextualized embedding in 
+# parallel and we want it to have the access to only the previous tokens 
 #  during inference we don't have  any causal mask but during training we have causal mask for generation   
 # when we are working with the models like llamma we mask out even the pre-filling part but for the paligemma we do not mask out anytthing 
 
@@ -216,3 +298,4 @@ class PaliGemmaForConditionalGeneration(nn.Module):
         return outputs
     
 
+ 
