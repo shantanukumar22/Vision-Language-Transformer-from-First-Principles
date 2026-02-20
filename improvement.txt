@@ -1,0 +1,2 @@
+Add a concrete result — even something small like "achieved X BLEU on VQAv2 subset" or "matched Y% of PaliGemma-3B on a captioning benchmark." Quantitative outcomes transform it from an implementation exercise into a project with stakes. A clean GitHub with a readable README and a loss curve or two also goes a long way.
+Bottom line: For the level, this is excellent. It demonstrates you understand modern LLM/VLM architecture at a level most undergrads don't reach until grad school, assuming you can back it up in conversation.

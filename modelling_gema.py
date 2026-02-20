@@ -1,4 +1,14 @@
 # ! this file is the fusion logic between vision and language
+#Image → Vision Encoder → Image Embeddings
+# Text  → Tokenizer      → Text Embeddings
+
+# Image Embeddings + Text Embeddings
+#                 ↓
+#         Merge (Fusion Layer)
+#                 ↓
+#         Transformer (Gemma)
+#                 ↓
+#          Next Token Prediction 
 
 #Image-> SigLIP Vision Encoder ->Image Patch Embeddings -> projection Layers ( resize to LM dimension )
 # -> Merge with text embeddings  -> Gemma Language model -> generated text
@@ -96,11 +106,48 @@ class GemmaModel(nn.Module):
     def get_input_embeddintgs(self):
         return self.embed_tokens
     
+    def forward(
+            self,
+            attention_mask:Optional[torch.Tensor] = None,
+            positions_ids: Optional[torch.LongTensor] = None,
+            inputs_embed: Optional[torch.FloatTensor] = None,
+            kv_cache: Optional[KVCache] = None,
+    ) -> torch.FloatTensor:
+        #[Batch_size,Seq_len,Hidden_size]
+        hidden_states=inputs_embed
+        #[Batch_size,seq_len,Hidden)size]
+        normalizer=torch.tensor(self.config.hidden_size**0.5, dtype=hidden_states.dtype)
+        hidden_states=hidden_states*normalizer
 
+        #built from bunch of layers so output of one layer becomes the input of another layer
+        for decoder_layer in self.layers:
+            #[Batch_size,Seq_len,hidden_size]
+            hidden_states=decoder_layer(
+                hidden_states,
+                attention_mask=attention_mask,
+                positions_ids=positions_ids,
+                kv_cache=kv_cache,
+            )
+        hidden_states=self.norm(hidden_states)
 
+        return hidden_states
 
+class GemmaRMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.zeros(dim))
 
+    def _norm(self, x):
+        #eps added to avoid division by zero
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
 
+    def forward(self, x):
+        output = self._norm(x.float())
+        # Llama does x.to(float16) * w whilst Gemma is (x * w).to(float16)
+        # See https://github.com/huggingface/transformers/pull/29402
+        output = output * (1.0 + self.weight.float())
+        return output.type_as(x)
 
 # in hugging face whenever we see something something for causalLM it's just transformer model+language modelling head
 class GemmaForCausalLM(nn.Module):
