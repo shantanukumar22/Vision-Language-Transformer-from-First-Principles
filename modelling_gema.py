@@ -16,6 +16,7 @@
 #!causality is a choice. which is made during the arhcitecture of LLM. authors of paligemma didn't put the
 #causality in the prompt for the image.but it is in the generation. however mostly LLM are build in case with masking the next tokens even the prompts cause it is considered as the generation itself
 import torch
+import math
 from torch import nn
 from typing import Tuple,Optional,List
 from torch.nn import CrossEntropyLoss
@@ -114,7 +115,7 @@ class PaliGemmaConfig():
         self.is_encoder_decoder = False
         self.pad_token_id = pad_token_id
 
-        self.vision_config = SiglipVisionConfig(**vision_config)
+        self.vision_config = SigLIPVisionConfig(**vision_config)
         self.text_config = text_config
 
         self.text_config = GemmaConfig(**text_config, pad_token_id=pad_token_id)
@@ -162,10 +163,10 @@ class GemmaRotaryEmbedding(nn.Module):
     @torch.no_grad()
     def forward(self, x, position_ids, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
-        self.inv_freq.to(x.device)
+        inv_freq = self.inv_freq.to(x.device)
         # Copy the inv_freq tensor for batch in the sequence
         # inv_freq_expanded: [Batch_Size, Head_Dim // 2, 1]
-        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
+        inv_freq_expanded = inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1)
         # position_ids_expanded: [Batch_Size, 1, Seq_Len]
         position_ids_expanded = position_ids[:, None, :].float()
         device_type = x.device.type
@@ -196,12 +197,6 @@ def apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1):
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
-        
-
-
-
-
-
 
 class GemmaAttention(nn.Module):
     def __init__(self,config:GemmaConfig,layer_idx: Optional[int]=None):
@@ -291,9 +286,6 @@ class GemmaAttention(nn.Module):
 
         return attn_output, attn_weights
 
-
-
-
 class GemmaDecoderLayer(nn.Module):
 
     def __init__(self, config: GemmaConfig, layer_idx: int):
@@ -350,18 +342,18 @@ class GemmaModel(nn.Module):
 
         )
         self.norm=GemmaRMSNorm(config.hidden_size,eps=config.rms_norm_eps)
-    def get_input_embeddintgs(self):
+    def get_input_embeddings(self):
         return self.embed_tokens
     
     def forward(
             self,
             attention_mask:Optional[torch.Tensor] = None,
-            positions_ids: Optional[torch.LongTensor] = None,
-            inputs_embed: Optional[torch.FloatTensor] = None,
+            position_ids: Optional[torch.LongTensor] = None,
+            inputs_embeds: Optional[torch.FloatTensor] = None,
             kv_cache: Optional[KVCache] = None,
     ) -> torch.FloatTensor:
         #[Batch_size,Seq_len,Hidden_size]
-        hidden_states=inputs_embed
+        hidden_states=inputs_embeds
         #[Batch_size,seq_len,Hidden)size]
         normalizer=torch.tensor(self.config.hidden_size**0.5, dtype=hidden_states.dtype)
         hidden_states=hidden_states*normalizer
@@ -372,7 +364,7 @@ class GemmaModel(nn.Module):
             hidden_states=decoder_layer(
                 hidden_states,
                 attention_mask=attention_mask,
-                positions_ids=positions_ids,
+                position_ids=position_ids,
                 kv_cache=kv_cache,
             )
         hidden_states=self.norm(hidden_states)
@@ -408,7 +400,7 @@ class GemmaForCausalLM(nn.Module):
     def get_input_embeddings(self):
         return self.model.embed_tokens
     def tie_weights(self):
-        self.lm_head.weight(self.model.embed_tokens.weight)
+        self.lm_head.weight = self.model.embed_tokens.weight
 
     def forward(
         self,
@@ -446,10 +438,10 @@ class GemmaForCausalLM(nn.Module):
 class PaliGemmaMultiModalProjector(nn.Module):
     def __init__(self,config:PaliGemmaConfig):
         super().__init__()
-        self.linear=nn.linear(config.vision_config.hidden_size,config.vision_config.projection_dim,bias=True)
-        def forward(self,image_features):
-            hidden_states=self.linear(image_features)
-            return hidden_states
+        self.linear=nn.Linear(config.vision_config.hidden_size,config.vision_config.projection_dim,bias=True)
+    def forward(self,image_features):
+        hidden_states=self.linear(image_features)
+        return hidden_states
 
 class PaliGemmaForConditionalGeneration(nn.Module):
     #actual multimodal model.
@@ -468,7 +460,7 @@ class PaliGemmaForConditionalGeneration(nn.Module):
 
 #weight tying is the technique of reusing the parameters of one layer into the other
     def tie_weights(self):
-        return self.language_model.tie_weigths()
+        return self.language_model.tie_weights()
     #fusion
     #image_features -> embeddings from vision encoder,
     #input_embeds-> embeddings of text tokens 
@@ -484,7 +476,7 @@ class PaliGemmaForConditionalGeneration(nn.Module):
         #shape:[Batch_size,Seq_len,Hidden_size]
         scaled_image_features=image_features/(self.config.hidden_size**0.5)
         #combine the embeddings of the image tokens, the text tokens and the mask out all the padding tokens
-        final_embedding= torch.zeros(batch_size,sequence_length,embed_dim, dtype=input_embeds.dtype,device=input_embeds)
+        final_embedding= torch.zeros(batch_size,sequence_length,embed_dim, dtype=input_embeds.dtype,device=input_embeds.device)
         #shape: [Batch_size, sequence_length] True for text tokens
         text_mask=(input_ids != self.config.image_token_index) & (input_ids !=self.pad_token_id)
         #shape:[Batch_size,seq len] true for image tokens
@@ -500,7 +492,7 @@ class PaliGemmaForConditionalGeneration(nn.Module):
 
         #add the text embedding
         #whenever text mask is 1 we copy the embeddding from the input embeds otherwise final_embedding 
-        final_embeddings=torch.where(text_mask_expanded,input_embeds,final_embedding)
+        final_embedding = torch.where(text_mask_expanded, input_embeds, final_embedding)
         #insert image embedding, we cant use torch.where because the  sequence length of the scaled_image_feature is not equal  to the sequence length of the final emebeddding 
         #copy from the scaled image  where image_mask_expanded is true.
         final_embedding=final_embedding.masked_scatter(image_mask_expanded,scaled_image_features)
@@ -534,7 +526,7 @@ class PaliGemmaForConditionalGeneration(nn.Module):
             kv_len= kv_cache.num_items() + q_len
             # also in this case we dont need to mask anything since each query should be able to attend all previous tokens
             # this only works when we have no padding 
-            causal_mask=torch.full((batch_size,q_len,kv_len),fill_value=0,dtype=type,device=device)
+            causal_mask=torch.full((batch_size,q_len,kv_len),fill_value=0,dtype=dtype,device=device)
             
             ## add the head dimension
             
@@ -550,7 +542,7 @@ class PaliGemmaForConditionalGeneration(nn.Module):
             #this is the generation part so just 1 query where we will be needing the positional query
             #create the position ids  based on the size of the attention mask 
             #for masked tokens,use the number 1 as position
-            position_ids= (attention_mask.cumsum(-1).masked_fill_(attention_mask==0),1).to(device)
+            position_ids= attention_mask.cumsum(-1).masked_fill_(attention_mask==0,1).to(device)
         return final_embedding,causal_mask,position_ids
     def forward(
         self,
@@ -581,7 +573,7 @@ class PaliGemmaForConditionalGeneration(nn.Module):
         outputs= self.language_model(
             attention_mask=attention_mask,
             position_ids=position_ids,
-            input_embeds=input_embeds,
+            inputs_embeds=input_embeds,
             kv_cache=kv_cache,
          )
         return outputs
