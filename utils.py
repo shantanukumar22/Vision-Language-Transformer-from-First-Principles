@@ -1,37 +1,39 @@
-from modelling_gema import PaliGemmaForConditionalGeneration,PaliGemmaConfig
+# from modelling_gemma import PaliGemmaForConditionalGeneration, PaliGemmaConfig
+from modelling_gemma import PaliGemmaConfig,PaliGemmaForConditionalGeneration
 from transformers import AutoTokenizer
 import json
 import glob
 from safetensors import safe_open
-from typing import  Tuple
+from typing import Tuple
 import os
 
-def load_hf_model(model_path:str,device:str)->Tuple[PaliGemmaForConditionalGeneration,AutoTokenizer]:
-    #loading the tokenizer
-    tokenizer=AutoTokenizer.from_pretrained(model_path,padding_side='right')
+def load_hf_model(model_path: str, device: str) -> Tuple[PaliGemmaForConditionalGeneration, AutoTokenizer]:
+    # Load the tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(model_path, padding_side="right")
     assert tokenizer.padding_side == "right"
-    #find all the safetensors file
-    safetensors_files=glob.glob(os.path.join(model_path,"*.safetensors"))
 
-    # and load them one by one in the tensor dictionary
-    tensors=[]
+    # Find all the *.safetensors files
+    safetensors_files = glob.glob(os.path.join(model_path, "*.safetensors"))
+
+    # ... and load them one by one in the tensors dictionary
+    tensors = {}
     for safetensors_file in safetensors_files:
-        with safe_open(safetensors_file,framework='pt',device='cpu') as f:
+        with safe_open(safetensors_file, framework="pt", device="cpu") as f:
             for key in f.keys():
                 tensors[key] = f.get_tensor(key)
-    #load the model's config
-    with open(os.path.join(model_path,"config.json"), "r") as f:
+
+    # Load the model's config
+    with open(os.path.join(model_path, "config.json"), "r") as f:
         model_config_file = json.load(f)
-        config=PaliGemmaConfig(**model_config_file)
+        config = PaliGemmaConfig(**model_config_file)
 
-        #create the model using teh configuration
-        model=PaliGemmaForConditionalGeneration(config).to(device)
-        #load the state dict of the model
-        model.load_state_dict(tensors,strict=False)
+    # Create the model using the configuration
+    model = PaliGemmaForConditionalGeneration(config).to(device)
 
-        #tie weights
+    # Load the state dict of the model
+    model.load_state_dict(tensors, strict=False)
 
-        model.tie_weights()
+    # Tie weights
+    model.tie_weights()
 
-        return(model,tokenizer)
-     
+    return (model, tokenizer)

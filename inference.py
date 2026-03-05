@@ -3,7 +3,7 @@ import torch
 import fire
 
 from processing_paligemma import PaliGemmaProcessor
-from modelling_gema import KVCache, PaliGemmaForConditionalGeneration
+from modelling_gemma import KVCache,PaliGemmaForConditionalGeneration
 from utils import load_hf_model
 
 
